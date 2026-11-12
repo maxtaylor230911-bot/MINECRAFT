@@ -1,0 +1,702 @@
+    50→    50→  }
+    51→    51→  private static fade(t: number) { return t * t * t * (t * (t * 6 - 15) + 10); }
+    52→    52→  private static lerp(a: number, b: number, t: number) { return a + t * (b - a); }
+    53→    53→  private static grad(h: number, x: number, y: number, z: number) {
+    54→    54→    switch (h & 15) {
+    55→    55→      case 0: return x + y; case 1: return -x + y; case 2: return x - y; case 3: return -x - y;
+    56→    56→      case 4: return x + z; case 5: return -x + z; case 6: return x - z; case 7: return -x - z;
+    57→    57→      case 8: return y + z; case 9: return -y + z; case 10: return y - z; case 11: return -y - z;
+    58→    58→      case 12: return x + y; case 13: return -y + z; case 14: return y - x; case 15: return -y - z;
+    59→    59→    }
+    60→    60→    return 0;
+    61→    61→  }
+    62→    62→  noise3(x: number, y: number, z: number): number {
+    63→    63→    const X = Math.floor(x) & 255, Y = Math.floor(y) & 255, Z = Math.floor(z) & 255;
+    64→    64→    x -= Math.floor(x); y -= Math.floor(y); z -= Math.floor(z);
+    65→    65→    const u = Perlin.fade(x), v = Perlin.fade(y), w = Perlin.fade(z);
+    66→    66→    const p = this.p;
+    67→    67→    const A = p[X] + Y, AA = p[A] + Z, AB = p[A + 1] + Z;
+    68→    68→    const B = p[X + 1] + Y, BA = p[B] + Z, BB = p[B + 1] + Z;
+    69→    69→    return Perlin.lerp(
+    70→    70→      Perlin.lerp(
+    71→    71→        Perlin.lerp(Perlin.grad(p[AA], x, y, z), Perlin.grad(p[BA], x - 1, y, z), u),
+    72→    72→        Perlin.lerp(Perlin.grad(p[AB], x, y - 1, z), Perlin.grad(p[BB], x - 1, y - 1, z), u), v),
+    73→    73→      Perlin.lerp(
+    74→    74→        Perlin.lerp(Perlin.grad(p[AA + 1], x, y, z - 1), Perlin.grad(p[BA + 1], x - 1, y, z - 1), u),
+    75→    75→        Perlin.lerp(Perlin.grad(p[AB + 1], x, y - 1, z - 1), Perlin.grad(p[BB + 1], x - 1, y - 1, z - 1), u), v),
+    76→    76→      w);
+    77→    77→  }
+    78→    78→  noise2(x: number, z: number): number { return this.noise3(x, 0.5, z); }
+    79→    79→  fbm2(x: number, z: number, oct: number, lac = 2, gain = 0.5): number {
+    80→    80→    let a = 1, f = 1, sum = 0, norm = 0;
+    81→    81→    for (let i = 0; i < oct; i++) {
+    82→    82→      sum += a * this.noise2(x * f, z * f);
+    83→    83→      norm += a; a *= gain; f *= lac;
+    84→    84→    }
+    85→    85→    return sum / norm;
+    86→    86→  }
+    87→    87→  fbm3(x: number, y: number, z: number, oct: number): number {
+    88→    88→    let a = 1, f = 1, sum = 0, norm = 0;
+    89→    89→    for (let i = 0; i < oct; i++) {
+    90→    90→      sum += a * this.noise3(x * f, y * f, z * f);
+    91→    91→      norm += a; a *= 0.5; f *= 2;
+    92→    92→    }
+    93→    93→    return sum / norm;
+    94→    94→  }
+    95→    95→}
+    96→    96→
+    97→    97→// Fast deterministic hash for per-column decisions
+    98→    98→function hash2(x: number, z: number, seed: number): number {
+    99→    99→  let h = seed ^ Math.imul(x, 374761393) ^ Math.imul(z, 668265263);
+   100→   100→  h = Math.imul(h ^ (h >>> 13), 1274126177);
+   101→   101→  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+   102→   102→}
+   103→   103→
+   104→   104→/// ---------------- world state ----------------
+   105→   105→
+   106→   106→interface Chunk {
+   107→   107→  cx: number; cz: number;
+   108→   108→  blocks: Uint8Array;   // 16*128*16
+   109→   109→  light: Uint8Array;    // sky<<4 | block
+   110→   110→  biomes: Uint8Array;   // 16*16 biome id
+   111→   111→  heights: Uint8Array;  // 16*16 surface height
+   112→   112→}
+   113→   113→
+   114→   114→export const B = {
+   115→   115→  AIR: 0, STONE: 1, GRASS: 2, DIRT: 3, COBBLE: 4, PLANKS: 5, SAND: 6, GRAVEL: 7,
+   116→   116→  LOG: 8, LEAVES: 9, WATER: 10, GLASS: 11, COAL: 12, IRON: 13, GOLD: 14,
+   117→   117→  DIAMOND: 15, REDSTONE: 16, BEDROCK: 17, SNOWGRASS: 18, ICE: 19, CACTUS: 20,
+   118→   118→  SANDSTONE: 21, BIRCH_LOG: 22, BIRCH_LEAVES: 23, SPRUCE_LOG: 24, SPRUCE_LEAVES: 25,
+   119→   119→  GLOWSTONE: 26, TORCH: 27, TALLGRASS: 28, POPPY: 29, DANDELION: 30, CLAY: 45,
+   120→   120→};
+   121→   121→
+   122→   122→const BIOME = { OCEAN: 0, BEACH: 1, PLAINS: 2, FOREST: 3, DESERT: 4, SNOWY: 5, MOUNTAIN: 6 } as const;
+   123→   123→
+   124→   124→let seedNum = 1337;
+   125→   125→let terrain: Perlin;
+   126→   126→let caveA: Perlin;
+   127→   127→let caveB: Perlin;
+   128→   128→let cheese: Perlin;
+   129→   129→
+   130→   130→const chunks = new Map<number, Chunk>();
+   131→   131→const edits = new Map<number, Map<number, number>>(); // chunkKey -> (idx -> blockId)
+   132→   132→let smoothLighting = true;
+   133→   133→
+   134→   134→function getChunk(cx: number, cz: number): Chunk | undefined {
+   135→   135→  return chunks.get(chunkKey(cx, cz));
+   136→   136→}
+   137→   137→function getBlockG(x: number, y: number, z: number): number {
+   138→   138→  if (y < 0) return B.BEDROCK;
+   139→   139→  if (y >= WORLD_HEIGHT) return B.AIR;
+   140→   140→  const c = getChunk(x >> 4, z >> 4);
+   141→   141→  if (!c) return 255; // unknown
+   142→   142→  return c.blocks[vidx(x & 15, y, z & 15)];
+   143→   143→}
+   144→   144→function getLightG(x: number, y: number, z: number): number {
+   145→   145→  if (y >= WORLD_HEIGHT) return 0xf0;
+   146→   146→  if (y < 0) return 0;
+   147→   147→  const c = getChunk(x >> 4, z >> 4);
+   148→   148→  if (!c) return 0;
+   149→   149→  return c.light[vidx(x & 15, y, z & 15)];
+   150→   150→}
+   151→   151→function setLightG(x: number, y: number, z: number, v: number, touched: Set<number>): void {
+   152→   152→  const c = getChunk(x >> 4, z >> 4);
+   153→   153→  if (!c || y < 0 || y >= WORLD_HEIGHT) return;
+   154→   154→  c.light[vidx(x & 15, y, z & 15)] = v;
+   155→   155→  touched.add(chunkKey(x >> 4, z >> 4));
+   156→   156→}
+   157→   157→
+   158→   158→/// ---------------- terrain generation ----------------
+   159→   159→
+   160→   160→interface ColInfo { h: number; biome: number; temp: number; hum: number; grassR: number; grassG: number; grassB: number; }
+   161→   161→
+   162→   162→function columnInfo(wx: number, wz: number): ColInfo {
+   163→   163→  const cont = terrain.fbm2(wx * 0.0016, wz * 0.0016, 4);
+   164→   164→  const hills = terrain.fbm2(wx * 0.012 + 100, wz * 0.012 - 100, 3);
+   165→   165→  const ridged = 1 - Math.abs(terrain.fbm2(wx * 0.0045 + 400, wz * 0.0045 + 400, 4));
+   166→   166→  const mountainMask = Math.min(1, Math.max(0, (cont - 0.05) / 0.45));
+   167→   167→  const mountains = ridged * ridged * mountainMask;
+   168→   168→  let h = 64 + cont * 26 + hills * 6 + mountains * 44;
+   169→   169→  // flatten deep ocean floors a bit
+   170→   170→  if (h < SEA_LEVEL - 4) h = SEA_LEVEL - 4 - (SEA_LEVEL - 4 - h) * 0.55;
+   171→   171→  const temp = terrain.fbm2(wx * 0.0009 + 900, wz * 0.0009 - 900, 2) - Math.max(0, (h - 88) * 0.012);
+   172→   172→  const hum = terrain.fbm2(wx * 0.0011 - 900, wz * 0.0011 + 900, 2);
+   173→   173→  h = Math.max(4, Math.min(WORLD_HEIGHT - 10, h));
+   174→   174→  const Hi = Math.floor(h);
+   175→   175→
+   176→   176→  let biome: number;
+   177→   177→  if (Hi < SEA_LEVEL - 1) biome = BIOME.OCEAN;
+   178→   178→  else if (Hi <= SEA_LEVEL + 1) biome = temp < -0.25 ? BIOME.SNOWY : BIOME.BEACH;
+   179→   179→  else if (Hi > 92 + hills * 6) biome = BIOME.MOUNTAIN;
+   180→   180→  else if (temp < -0.28) biome = BIOME.SNOWY;
+   181→   181→  else if (temp > 0.32 && hum < -0.05) biome = BIOME.DESERT;
+   182→   182→  else if (hum > 0.08) biome = BIOME.FOREST;
+   183→   183→  else biome = BIOME.PLAINS;
+   184→   184→
+   185→   185→  // grass tint by temperature / humidity
+   186→   186→  const t = Math.max(-1, Math.min(1, temp)), u = Math.max(-1, Math.min(1, hum));
+   187→   187→  const dry = (t + 1) / 2, lush = (u + 1) / 2;
+   188→   188→  const grassR = 0.42 + dry * 0.28 - lush * 0.12;
+   189→   189→  const grassG = 0.68 + lush * 0.12 - dry * 0.12;
+   190→   190→  const grassB = 0.30 + (1 - lush) * 0.18;
+   191→   191→
+   192→   192→  return { h: Hi, biome, temp, hum, grassR, grassG: Math.min(grassG, 0.85), grassB };
+   193→   193→}
+   194→   194→
+   195→   195→function generateChunk(cx: number, cz: number): Chunk {
+   196→   196→  const blocks = new Uint8Array(CHUNK * CHUNK * WORLD_HEIGHT);
+   197→   197→  const biomes = new Uint8Array(CHUNK * CHUNK);
+   198→   198→  const heights = new Uint8Array(CHUNK * CHUNK);
+   199→   199→  const c: Chunk = { cx, cz, blocks, light: new Uint8Array(CHUNK * CHUNK * WORLD_HEIGHT), biomes, heights };
+   200→   200→
+   201→   201→  // margin height cache for trees (-3..18)
+   202→   202→  const M = 3, W = CHUNK + M * 2;
+   203→   203→  const cols: ColInfo[] = new Array(W * W);
+   204→   204→  for (let z = 0; z < W; z++)
+   205→   205→    for (let x = 0; x < W; x++)
+   206→   206→      cols[z * W + x] = columnInfo(cx * CHUNK + x - M, cz * CHUNK + z - M);
+   207→   207→
+   208→   208→  for (let z = 0; z < CHUNK; z++) {
+   209→   209→    for (let x = 0; x < CHUNK; x++) {
+   210→   210→      const info = cols[(z + M) * W + (x + M)];
+   211→   211→      const wx = cx * CHUNK + x, wz = cz * CHUNK + z;
+   212→   212→      const h = info.h;
+   213→   213→      biomes[z * 16 + x] = info.biome;
+   214→   214→      heights[z * 16 + x] = h;
+   215→   215→
+   216→   216→      for (let y = 0; y <= h; y++) {
+   217→   217→        let id = B.STONE;
+   218→   218→        const depth = h - y;
+   219→   219→        if (y === 0) id = B.BEDROCK;
+   220→   220→        else if (y <= 3 && hash2(wx * 7 + y, wz * 13 - y, seedNum) < 0.5) id = B.BEDROCK;
+   221→   221→        else if (info.biome === BIOME.OCEAN) {
+   222→   222→          if (depth === 0) id = hash2(wx, wz, seedNum + 5) < 0.35 ? B.GRAVEL : (hash2(wx, wz, seedNum + 6) < 0.2 ? B.CLAY : B.SAND);
+   223→   223→          else if (depth < 4) id = B.SAND;
+   224→   224→        } else if (info.biome === BIOME.DESERT) {
+   225→   225→          if (depth === 0) id = B.SAND;
+   226→   226→          else if (depth < 4) id = B.SAND;
+   227→   227→          else if (depth < 7) id = B.SANDSTONE;
+   228→   228→        } else if (info.biome === BIOME.BEACH) {
+   229→   229→          if (depth < 4) id = B.SAND;
+   230→   230→        } else if (info.biome === BIOME.SNOWY) {
+   231→   231→          if (depth === 0) id = B.SNOWGRASS;
+   232→   232→          else if (depth < 4) id = B.DIRT;
+   233→   233→        } else if (info.biome === BIOME.MOUNTAIN) {
+   234→   234→          if (depth === 0 && h > 98) id = B.SNOWGRASS;
+   235→   235→          else if (depth === 0 && h < 80) id = B.GRASS;
+   236→   236→          else if (depth < 3 && h < 80) id = B.DIRT;
+   237→   237→        } else {
+   238→   238→          if (depth === 0) id = B.GRASS;
+   239→   239→          else if (depth < 4) id = B.DIRT;
+   240→   240→        }
+   241→   241→        blocks[vidx(x, y, z)] = id;
+   242→   242→      }
+   243→   243→      // water / ice
+   244→   244→      if (h < SEA_LEVEL) {
+   245→   245→        for (let y = h + 1; y <= SEA_LEVEL; y++) blocks[vidx(x, y, z)] = B.WATER;
+   246→   246→        if (info.temp < -0.28) blocks[vidx(x, SEA_LEVEL, z)] = B.ICE;
+   247→   247→      }
+   248→   248→
+   249→   249→      // caves
+   250→   250→      const caveTop = (h <= SEA_LEVEL + 1) ? h - 6 : h + 1;
+   251→   251→      for (let y = 5; y < caveTop && y < WORLD_HEIGHT; y++) {
+   252→   252→        const i = vidx(x, y, z);
+   253→   253→        if (blocks[i] === B.AIR || blocks[i] === B.BEDROCK || blocks[i] === B.WATER) continue;
+   254→   254→        const n1 = caveA.noise3(wx * 0.021, y * 0.032, wz * 0.021);
+   255→   255→        const n2 = caveB.noise3(wx * 0.021 + 300, y * 0.032, wz * 0.021 - 300);
+   256→   256→        if (n1 * n1 + n2 * n2 < 0.0055) { blocks[i] = B.AIR; continue; }
+   257→   257→        if (y < 40) {
+   258→   258→          const ch = cheese.noise3(wx * 0.016, y * 0.024, wz * 0.016);
+   259→   259→          if (ch > 0.58) blocks[i] = B.AIR;
+   260→   260→        }
+   261→   261→      }
+   262→   262→    }
+   263→   263→  }
+   264→   264→
+   265→   265→  // ores (random walk veins)
+   266→   266→  const rnd = mulberry32(((cx & 0xffff) << 16) ^ (cz & 0xffff) ^ seedNum);
+   267→   267→  const veins: [number, number, number, number][] = [
+   268→   268→    // [block, tries, minY, maxY]
+   269→   269→    [B.COAL, 14, 8, 118], [B.IRON, 10, 6, 64], [B.GOLD, 3, 6, 32],
+   270→   270→    [B.REDSTONE, 5, 6, 16], [B.DIAMOND, 2, 6, 15],
+   271→   271→  ];
+   272→   272→  for (const [ore, tries, minY, maxY] of veins) {
+   273→   273→    for (let t = 0; t < tries; t++) {
+   274→   274→      let x = Math.floor(rnd() * 16), z = Math.floor(rnd() * 16);
+   275→   275→      let y = minY + Math.floor(rnd() * (maxY - minY));
+   276→   276→      const size = 3 + Math.floor(rnd() * 5);
+   277→   277→      for (let s = 0; s < size; s++) {
+   278→   278→        if (x >= 0 && x < 16 && z >= 0 && z < 16 && y > 3 && y < WORLD_HEIGHT) {
+   279→   279→          const i = vidx(x, y, z);
+   280→   280→          if (blocks[i] === B.STONE) blocks[i] = ore;
+   281→   281→        }
+   282→   282→        x += Math.floor(rnd() * 3) - 1; y += Math.floor(rnd() * 3) - 1; z += Math.floor(rnd() * 3) - 1;
+   283→   283→      }
+   284→   284→    }
+   285→   285→  }
+   286→   286→
+   287→   287→  // trees & decorations (with margin so canopies cross borders seamlessly)
+   288→   288→  for (let z = -M; z < CHUNK + M; z++) {
+   289→   289→    for (let x = -M; x < CHUNK + M; x++) {
+   290→   290→      const info = cols[(z + M) * W + (x + M)];
+   291→   291→      const wx = cx * CHUNK + x, wz = cz * CHUNK + z;
+   292→   292→      const r = hash2(wx, wz, seedNum + 99);
+   293→   293→      const r2 = hash2(wx, wz, seedNum + 1234);
+   294→   294→      const h = info.h;
+   295→   295→      if (h <= SEA_LEVEL) continue;
+   296→   296→      const local = x >= 0 && x < 16 && z >= 0 && z < 16;
+   297→   297→      const groundId = local ? blocks[vidx(x, h, z)] : B.AIR;
+   298→   298→      const isGrassy = (info.biome === BIOME.PLAINS || info.biome === BIOME.FOREST || info.biome === BIOME.SNOWY || (info.biome === BIOME.MOUNTAIN && h < 80));
+   299→   299→
+   300→   300→      if (isGrassy && (groundId === B.GRASS || groundId === B.SNOWGRASS || !local)) {
+   301→   301→        let treeKind = -1, density = 0;
+   302→   302→        if (info.biome === BIOME.FOREST) { treeKind = r2 < 0.25 ? 1 : 0; density = 0.028; }
+   303→   303→        else if (info.biome === BIOME.PLAINS) { treeKind = 0; density = 0.003; }
+   304→   304→        else if (info.biome === BIOME.SNOWY) { treeKind = 2; density = 0.012; }
+   305→   305→        else if (info.biome === BIOME.MOUNTAIN && h < 88) { treeKind = 2; density = 0.006; }
+   306→   306→        if (treeKind >= 0 && r < density) {
+   307→   307→          stampTree(blocks, x, h, z, treeKind, hash2(wx, wz, seedNum + 77));
+   308→   308→          continue;
+   309→   309→        }
+   310→   310→        if (local && (info.biome === BIOME.PLAINS || info.biome === BIOME.FOREST) && groundId === B.GRASS) {
+   311→   311→          if (r > 0.86 && r < 0.965) blocks[vidx(x, h + 1, z)] = B.TALLGRASS;
+   312→   312→          else if (r >= 0.965 && r < 0.975) blocks[vidx(x, h + 1, z)] = B.POPPY;
+   313→   313→          else if (r >= 0.975 && r < 0.985) blocks[vidx(x, h + 1, z)] = B.DANDELION;
+   314→   314→        }
+   315→   315→      } else if (local && info.biome === BIOME.DESERT && groundId === B.SAND && r < 0.006) {
+   316→   316→        const ch = 1 + Math.floor(r2 * 3);
+   317→   317→        for (let i = 1; i <= ch; i++) if (h + i < WORLD_HEIGHT) blocks[vidx(x, h + i, z)] = B.CACTUS;
+   318→   318→      }
+   319→   319→    }
+   320→   320→  }
+   321→   321→
+   322→   322→  // apply saved player edits
+   323→   323→  const ed = edits.get(chunkKey(cx, cz));
+   324→   324→  if (ed) for (const [idx, id] of ed) blocks[idx] = id;
+   325→   325→
+   326→   326→  return c;
+   327→   327→}
+   328→   328→
+   329→   329→function stampTree(blocks: Uint8Array, x: number, h: number, z: number, kind: number, r: number): void {
+   330→   330→  if (kind === 0 || kind === 1) {
+   331→   331→    // oak / birch
+   332→   332→    const birch = kind === 1;
+   333→   333→    const trunkH = (birch ? 5 : 4) + Math.floor(r * 3) + (birch ? 1 : 0);
+   334→   334→    const logId = birch ? B.BIRCH_LOG : B.LOG;
+   335→   335→    const leafId = birch ? B.BIRCH_LEAVES : B.LEAVES;
+   336→   336→    const top = h + trunkH;
+   337→   337→    for (let dy = -2; dy <= 1; dy++) {
+   338→   338→      const rad = dy < 0 ? 2 : 1;
+   339→   339→      for (let dx = -rad; dx <= rad; dx++)
+   340→   340→        for (let dz = -rad; dz <= rad; dz++) {
+   341→   341→          if (dx === 0 && dz === 0 && dy < 1) continue;
+   342→   342→          if (Math.abs(dx) === rad && Math.abs(dz) === rad && (dy >= 0 || hash2(x + dx, z + dz + dy * 31, 7) < 0.5)) continue;
+   343→   343→          setLocalAir(blocks, x + dx, top + dy, z + dz, leafId);
+   344→   344→        }
+   345→   345→    }
+   346→   346→    for (let y = h + 1; y <= top; y++) setLocalForce(blocks, x, y, z, logId);
+   347→   347→  } else {
+   348→   348→    // spruce (conical)
+   349→   349→    const trunkH = 6 + Math.floor(r * 4);
+   350→   350→    const top = h + trunkH;
+   351→   351→    setLocalAir(blocks, x, top + 1, z, B.SPRUCE_LEAVES);
+   352→   352→    for (let dy = trunkH; dy >= 2; dy--) {
+   353→   353→      const ring = (trunkH - dy) % 2 === 0 ? Math.max(1, Math.min(2, Math.floor((trunkH - dy) / 2) + 1)) : 1;
+   354→   354→      const rad = Math.min(2, Math.max(1, ((trunkH - dy) >> 1) + 1)) - (dy === trunkH ? 1 : 0);
+   355→   355→      const rr = dy === trunkH ? 1 : (dy >= trunkH - 2 ? 1 : (((trunkH - dy) & 1) ? 2 : 1));
+   356→   356→      for (let dx = -rr; dx <= rr; dx++)
+   357→   357→        for (let dz = -rr; dz <= rr; dz++) {
+   358→   358→          if (dx === 0 && dz === 0 && dy < trunkH) continue;
+   359→   359→          if (Math.abs(dx) === rr && Math.abs(dz) === rr && rr > 1) continue;
+   360→   360→          setLocalAir(blocks, x + dx, h + dy, z + dz, B.SPRUCE_LEAVES);
+   361→   361→        }
+   362→   362→    }
+   363→   363→    for (let y = h + 1; y <= top; y++) setLocalForce(blocks, x, y, z, B.SPRUCE_LOG);
+   364→   364→  }
+   365→   365→}
+   366→   366→function setLocalAir(blocks: Uint8Array, x: number, y: number, z: number, id: number): void {
+   367→   367→  if (x < 0 || x > 15 || z < 0 || z > 15 || y < 1 || y >= WORLD_HEIGHT) return;
+   368→   368→  const i = vidx(x, y, z);
+   369→   369→  if (blocks[i] === B.AIR) blocks[i] = id;
+   370→   370→}
+   371→   371→function setLocalForce(blocks: Uint8Array, x: number, y: number, z: number, id: number): void {
+   372→   372→  if (x < 0 || x > 15 || z < 0 || z > 15 || y < 1 || y >= WORLD_HEIGHT) return;
+   373→   373→  blocks[vidx(x, y, z)] = id;
+   374→   374→}
+   375→   375→
+   376→   376→/// ---------------- lighting ----------------
+   377→   377→
+   378→   378→// recompute the direct skylight column for x,z; returns list of changed cells
+   379→   379→function relightColumn(cx: number, cz: number, lx: number, lz: number, changed: number[], oldVals: number[]): void {
+   380→   380→  const c = getChunk(cx, cz);
+   381→   381→  if (!c) return;
+   382→   382→  let level = 15;
+   383→   383→  for (let y = WORLD_HEIGHT - 1; y >= 0; y--) {
+   384→   384→    const i = vidx(lx, y, lz);
+   385→   385→    const id = c.blocks[i];
+   386→   386→    if (IS_OPAQUE[id]) level = 0;
+   387→   387→    else if (OPACITY[id] > 0) level = Math.max(0, level - OPACITY[id]);
+   388→   388→    const sky = c.light[i] >> 4;
+   389→   389→    if (sky !== level) { changed.push(i); oldVals.push(sky); }
+   390→   390→    c.light[i] = (c.light[i] & 0x0f) | (level << 4);
+   391→   391→    if (level === 0 && y > 0 && IS_OPAQUE[c.blocks[vidx(lx, y - 1, lz)]]) {
+   392→   392→      // everything below is dark already unless lateral light; keep scanning (cheap)
+   393→   393→    }
+   394→   394→    if (level === 0) {
+   395→   395→      // continue only to zero-out cells that had sky light (e.g. under overhangs)
+   396→   396→      for (let yy = y - 1; yy >= 0; yy--) {
+   397→   397→        const ii = vidx(lx, yy, lz);
+   398→   398→        const s = c.light[ii] >> 4;
+   399→   399→        if (s !== 0) { changed.push(ii); oldVals.push(s); c.light[ii] = c.light[ii] & 0x0f; }
+   400→   400→      }
+   401→   401→      break;
+   402→   402→    }
+   403→   403→  }
+   404→   404→}
+   405→   405→
+   406→   406→const DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+   407→   407→
+   408→   408→// Additive BFS for one channel. ch: 0 sky, 1 block
+   409→   409→function addLightBFS(ch: number, seeds: number[], touched: Set<number>): void {
+   410→   410→  // seeds: packed world coords list [x,y,z,...]
+   411→   411→  const q = seeds.slice();
+   412→   412→  for (let si = 0; si < q.length; si += 3) {
+   413→   413→    const x = q[si], y = q[si + 1], z = q[si + 2];
+   414→   414→    const L = ch === 0 ? (getLightG(x, y, z) >> 4) : (getLightG(x, y, z) & 15);
+   415→   415→    if (L <= 1 && !(ch === 0 && L === 0)) { if (L <= 1) continue; }
+   416→   416→    for (let d = 0; d < 6; d++) {
+   417→   417→      const nx = x + DIRS[d][0], ny = y + DIRS[d][1], nz = z + DIRS[d][2];
+   418→   418→      if (ny < 0 || ny >= WORLD_HEIGHT) continue;
+   419→   419→      const nb = getBlockG(nx, ny, nz);
+   420→   420→      if (nb === 255) continue;
+   421→   421→      if (IS_OPAQUE[nb]) continue;
+   422→   422→      const att = Math.max(1, OPACITY[nb]);
+   423→   423→      let target: number;
+   424→   424→      if (ch === 0 && d === 3 && L === 15 && OPACITY[nb] === 0) target = 15; // skylight falls straight down undimmed
+   425→   425→      else target = L - att;
+   426→   426→      if (target <= 0) continue;
+   427→   427→      const cur = ch === 0 ? (getLightG(nx, ny, nz) >> 4) : (getLightG(nx, ny, nz) & 15);
+   428→   428→      if (cur < target) {
+   429→   429→        const old = getLightG(nx, ny, nz);
+   430→   430→        const v = ch === 0 ? ((old & 0x0f) | (target << 4)) : ((old & 0xf0) | target);
+   431→   431→        setLightG(nx, ny, nz, v, touched);
+   432→   432→        q.push(nx, ny, nz);
+   433→   433→      }
+   434→   434→    }
+   435→   435→  }
+   436→   436→}
+   437→   437→
+   438→   438→// Removal BFS: clears light that was sourced from (x,y,z) with value L, collecting re-add seeds
+   439→   439→function removeLightBFS(ch: number, x: number, y: number, z: number, L: number, touched: Set<number>, addSeeds: number[]): void {
+   440→   440→  const q: number[] = [x, y, z, L];
+   441→   441→  const old = getLightG(x, y, z);
+   442→   442→  setLightG(x, y, z, ch === 0 ? (old & 0x0f) : (old & 0xf0), touched);
+   443→   443→  for (let qi = 0; qi < q.length; qi += 4) {
+   444→   444→    const cx = q[qi], cy = q[qi + 1], cz = q[qi + 2], cl = q[qi + 3];
+   445→   445→    for (let d = 0; d < 6; d++) {
+   446→   446→      const nx = cx + DIRS[d][0], ny = cy + DIRS[d][1], nz = cz + DIRS[d][2];
+   447→   447→      if (ny < 0 || ny >= WORLD_HEIGHT) continue;
+   448→   448→      const nb = getBlockG(nx, ny, nz);
+   449→   449→      if (nb === 255) continue;
+   450→   450→      const nL = ch === 0 ? (getLightG(nx, ny, nz) >> 4) : (getLightG(nx, ny, nz) & 15);
+   451→   451→      if (nL === 0) continue;
+   452→   452→      const fedByUs = nL < cl || (ch === 0 && cl === 15 && d === 3 && nL === 15);
+   453→   453→      if (fedByUs) {
+   454→   454→        setLightG(nx, ny, nz, ch === 0 ? (getLightG(nx, ny, nz) & 0x0f) : (getLightG(nx, ny, nz) & 0xf0), touched);
+   455→   455→        q.push(nx, ny, nz, nL);
+   456→   456→      } else {
+   457→   457→        addSeeds.push(nx, ny, nz);
+   458→   458→      }
+   459→   459→    }
+   460→   460→  }
+   461→   461→}
+   462→   462→
+   463→   463→function computeInitialLight(c: Chunk, touched: Set<number>): void {
+   464→   464→  const seeds: number[] = [];
+   465→   465→  // direct skylight columns
+   466→   466→  for (let z = 0; z < 16; z++) {
+   467→   467→    for (let x = 0; x < 16; x++) {
+   468→   468→      let level = 15;
+   469→   469→      for (let y = WORLD_HEIGHT - 1; y >= 0; y--) {
+   470→   470→        const i = vidx(x, y, z);
+   471→   471→        const id = c.blocks[i];
+   472→   472→        if (IS_OPAQUE[id]) { level = 0; }
+   473→   473→        else if (OPACITY[id] > 0) level = Math.max(0, level - OPACITY[id]);
+   474→   474→        c.light[i] = level << 4;
+   475→   475→        if (level === 0) {
+   476→   476→          // remaining cells below stay 0 for now
+   477→   477→          for (let yy = y - 1; yy >= 0; yy--) c.light[vidx(x, yy, z)] &= 0x0f;
+   478→   478→          break;
+   479→   479→        }
+   480→   480→      }
+   481→   481→    }
+   482→   482→  }
+   483→   483→  // seed BFS from every lit cell bordering a darker transparent cell (cheap approx: all lit cells with L>1)
+   484→   484→  for (let y = 0; y < WORLD_HEIGHT; y++) {
+   485→   485→    for (let z = 0; z < 16; z++) {
+   486→   486→      for (let x = 0; x < 16; x++) {
+   487→   487→        const i = vidx(x, y, z);
+   488→   488→        const L = c.light[i] >> 4;
+   489→   489→        if (L > 1) seeds.push(c.cx * 16 + x, y, c.cz * 16 + z);
+   490→   490→        const e = EMIT[c.blocks[i]];
+   491→   491→        if (e > 0) c.light[i] = (c.light[i] & 0xf0) | e;
+   492→   492→      }
+   493→   493→    }
+   494→   494→  }
+   495→   495→  // also seed from neighbor chunks' border lights
+   496→   496→  const nseeds: number[] = [];
+   497→   497→  for (let d = 0; d < 4; d++) {
+   498→   498→    const nx = c.cx + DIRS[d][0], nz = c.cz + DIRS[d][2];
+   499→   499→    const nc = getChunk(nx, nz);
+   500→   500→    if (!nc) continue;
+   501→   501→    for (let y = 0; y < WORLD_HEIGHT; y++) {
+   502→   502→      for (let t = 0; t < 16; t++) {
+   503→   503→        const lx = d === 0 ? 0 : d === 1 ? 15 : t;
+   504→   504→        const lz = d === 2 ? 0 : d === 3 ? 15 : t;
+   505→   505→        const i = vidx(lx, y, lz);
+   506→   506→        const L = nc.light[i];
+   507→   507→        if ((L >> 4) > 1 || (L & 15) > 1) nseeds.push(nx * 16 + lx, y, nz * 16 + lz);
+   508→   508→        const e = EMIT[nc.blocks[i]];
+   509→   509→        if (e > 0) nseeds.push(nx * 16 + lx, y, nz * 16 + lz);
+   510→   510→      }
+   511→   511→    }
+   512→   512→  }
+   513→   513→  addLightBFS(0, seeds.concat(nseeds), touched);
+   514→   514→  addLightBFS(1, nseeds, touched);
+   515→   515→  // re-derive block-light seeds from emitters inside this chunk too
+   516→   516→  const bseeds: number[] = [];
+   517→   517→  for (let y = 0; y < WORLD_HEIGHT; y++)
+   518→   518→    for (let z = 0; z < 16; z++)
+   519→   519→      for (let x = 0; x < 16; x++) {
+   520→   520→        const i = vidx(x, y, z);
+   521→   521→        if (EMIT[c.blocks[i]] > 0) bseeds.push(c.cx * 16 + x, y, c.cz * 16 + z);
+   522→   522→      }
+   523→   523→  addLightBFS(1, bseeds, touched);
+   524→   524→}
+   525→   525→
+   526→   526→/// ---------------- meshing ----------------
+   527→   527→
+   528→   528→const FACE_DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+   529→   529→// corner positions per face (unit cube), CCW from outside
+   530→   530→const FACE_CORNERS: number[][][] = [
+   531→   531→  [[1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 0, 1]],
+   532→   532→  [[0, 0, 1], [0, 1, 1], [0, 1, 0], [0, 0, 0]],
+   533→   533→  [[0, 1, 1], [1, 1, 1], [1, 1, 0], [0, 1, 0]],
+   534→   534→  [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]],
+   535→   535→  [[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]],
+   536→   536→  [[1, 0, 0], [0, 0, 0], [0, 1, 0], [1, 1, 0]],
+   537→   537→];
+   538→   538→// uv corner (u,v) per face corner
+   539→   539→const FACE_UVS: number[][][] = [
+   540→   540→  [[0, 0], [0, 1], [1, 1], [1, 0]],
+   541→   541→  [[0, 0], [0, 1], [1, 1], [1, 0]],
+   542→   542→  [[0, 0], [1, 0], [1, 1], [0, 1]],
+   543→   543→  [[0, 0], [1, 0], [1, 1], [0, 1]],
+   544→   544→  [[0, 0], [1, 0], [1, 1], [0, 1]],
+   545→   545→  [[0, 0], [1, 0], [1, 1], [0, 1]],
+   546→   546→];
+   547→   547→const FACE_SHADE = [0.65, 0.65, 1.0, 0.55, 0.82, 0.82];
+   548→   548→
+   549→   549→interface Geom { pos: Float32Array; uv: Float32Array; light: Float32Array; tint: Float32Array; idx: Uint32Array; }
+   550→   550→function packBuf(b: { pos: number[]; uv: number[]; light: number[]; tint: number[]; idx: number[] }): Geom {
+   551→   551→  return {
+   552→   552→    pos: new Float32Array(b.pos), uv: new Float32Array(b.uv), light: new Float32Array(b.light),
+   553→   553→    tint: new Float32Array(b.tint), idx: new Uint32Array(b.idx),
+   554→   554→  };
+   555→   555→}
+   556→   556→
+   557→   557→interface MeshOut { solid: Geom | null; cutout: Geom | null; trans: Geom | null; }
+   558→   558→
+   559→   559→function meshChunk(c: Chunk): MeshOut {
+   560→   560→  const solid = { pos: [] as number[], uv: [] as number[], light: [] as number[], tint: [] as number[], idx: [] as number[] };
+   561→   561→  const cutout = { pos: [] as number[], uv: [] as number[], light: [] as number[], tint: [] as number[], idx: [] as number[] };
+   562→   562→  const trans = { pos: [] as number[], uv: [] as number[], light: [] as number[], tint: [] as number[], idx: [] as number[] };
+   563→   563→
+   564→   564→  const ox = c.cx * 16, oz = c.cz * 16;
+   565→   565→  const tileUV = new Array(64);
+   566→   566→  for (let t = 0; t < 64; t++) tileUV[t] = uvRect(t);
+   567→   567→
+   568→   568→  const grassTintPerCol = new Float32Array(16 * 16 * 3);
+   569→   569→  for (let z = 0; z < 16; z++)
+   570→   570→    for (let x = 0; x < 16; x++) {
+   571→   571→      const info = columnInfo(ox + x, oz + z);
+   572→   572→      grassTintPerCol[(z * 16 + x) * 3] = info.grassR;
+   573→   573→      grassTintPerCol[(z * 16 + x) * 3 + 1] = info.grassG;
+   574→   574→      grassTintPerCol[(z * 16 + x) * 3 + 2] = info.grassB;
+   575→   575→    }
+   576→   576→
+   577→   577→  const smooth = smoothLighting;
+   578→   578→  const aoVals = [0.42, 0.62, 0.82, 1.0];
+   579→   579→
+   580→   580→  for (let y = 0; y < WORLD_HEIGHT; y++) {
+   581→   581→    for (let z = 0; z < 16; z++) {
+   582→   582→      for (let x = 0; x < 16; x++) {
+   583→   583→        const id = c.blocks[vidx(x, y, z)];
+   584→   584→        if (id === 0 || id === 255) continue;
+   585→   585→        const wx = ox + x, wz = oz + z;
+   586→   586→        const render = RENDER[id];
+   587→   587→        const isCross = CROSS[id] === 1;
+   588→   588→        const bucket = render === 0 ? solid : render === 1 ? cutout : trans;
+   589→   589→
+   590→   590→        if (isCross) {
+   591→   591→          // two diagonal quads, both windings
+   592→   592→          const li = getLightG(wx, y, wz);
+   593→   593→          const sky = (li >> 4) / 15, blk = (li & 15) / 15;
+   594→   594→          const tintCol = (z * 16 + x) * 3;
+   595→   595→          const tr = grassTintPerCol[tintCol], tg = grassTintPerCol[tintCol + 1], tb = grassTintPerCol[tintCol + 2];
+   596→   596→          const uv = tileUV[tileOfId(id, 0)];
+   597→   597→          const a = 0.146, b2 = 0.854;
+   598→   598→          const quads = [
+   599→   599→            [[a, 0, a], [b2, 0, b2], [b2, 1, b2], [a, 1, a]],
+   600→   600→            [[b2, 0, b2], [a, 0, a], [a, 1, a], [b2, 1, b2]],
+   601→   601→            [[a, 0, b2], [b2, 0, a], [b2, 1, a], [a, 1, b2]],
+   602→   602→            [[b2, 0, a], [a, 0, b2], [a, 1, b2], [b2, 1, a]],
+   603→   603→          ];
+   604→   604→          const uvs = [[0, 0], [1, 0], [1, 1], [0, 1]];
+   605→   605→          for (const q of quads) {
+   606→   606→            const base = bucket.pos.length / 3;
+   607→   607→            for (let vi = 0; vi < 4; vi++) {
+   608→   608→              bucket.pos.push(x + q[vi][0], y + q[vi][1], z + q[vi][2]);
+   609→   609→              bucket.uv.push(uv[0] + (uv[2] - uv[0]) * uvs[vi][0], uv[1] + (uv[3] - uv[1]) * uvs[vi][1]);
+   610→   610→              bucket.light.push(sky, blk);
+   611→   611→              bucket.tint.push(tr * 0.95, tg * 0.95, tb * 0.95);
+   612→   612→            }
+   613→   613→            bucket.idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+   614→   614→          }
+   615→   615→          continue;
+   616→   616→        }
+   617→   617→
+   618→   618→        const topY = (id === B.WATER) ? ((getBlockG(wx, y + 1, wz) === B.WATER) ? 1 : 0.875) : 1;
+   619→   619→
+   620→   620→        for (let f = 0; f < 6; f++) {
+   621→   621→          const d = FACE_DIRS[f];
+   622→   622→          const nx = wx + d[0], ny = y + d[1], nz = wz + d[2];
+   623→   623→          const nid = getBlockG(nx, ny, nz);
+   624→   624→          if (ny < 0) continue;
+   625→   625→          if (nid === 255) continue; // unknown neighbor -> skip (remeshed when neighbor loads)
+   626→   626→          // visibility rules
+   627→   627→          if (id === B.WATER) {
+   628→   628→            if (nid === B.WATER || nid === B.ICE) continue;
+   629→   629→            if (IS_OPAQUE[nid]) continue;
+   630→   630→          } else if (render === 3) { // glass / ice
+   631→   631→            if (nid === id || IS_OPAQUE[nid]) continue;
+   632→   632→          } else if (render === 1) { // leaves
+   633→   633→            if (nid === id || IS_OPAQUE[nid]) continue;
+   634→   634→          } else {
+   635→   635→            if (IS_OPAQUE[nid]) continue;
+   636→   636→          }
+   637→   637→
+   638→   638→          const tile = tileOfId(id, f);
+   639→   639→          const uv = tileUV[tile];
+   640→   640→          const shade = FACE_SHADE[f];
+   641→   641→          const tintCol = (z * 16 + x) * 3;
+   642→   642→          let tr = 1, tg = 1, tb = 1;
+   643→   643→          const biomeTint = (id === B.GRASS && f === 2) || id === B.LEAVES || id === B.SPRUCE_LEAVES || id === B.TALLGRASS;
+   644→   644→          const snowyTint = (id === B.SNOWGRASS && f === 2);
+   645→   645→          if (biomeTint) { tr = grassTintPerCol[tintCol]; tg = grassTintPerCol[tintCol + 1]; tb = grassTintPerCol[tintCol + 2]; }
+   646→   646→          if (snowyTint) { tr = 0.9; tg = 0.95; tb = 1.0; }
+   647→   647→
+   648→   648→          const corners = FACE_CORNERS[f];
+   649→   649→          const uvc = FACE_UVS[f];
+   650→   650→          const base = bucket.pos.length / 3;
+   651→   651→          const skyA = [0, 0, 0, 0], blkA = [0, 0, 0, 0], aoA = [0, 0, 0, 0];
+   652→   652→
+   653→   653→          for (let vi = 0; vi < 4; vi++) {
+   654→   654→            const corner = corners[vi];
+   655→   655→            let px = x + corner[0], py = y + corner[1], pz = z + corner[2];
+   656→   656→            if (id === B.WATER && corner[1] === 1) py = y + topY;
+   657→   657→            bucket.pos.push(px, py, pz);
+   658→   658→            bucket.uv.push(uv[0] + (uv[2] - uv[0]) * uvc[vi][0], uv[1] + (uv[3] - uv[1]) * uvc[vi][1]);
+   659→   659→
+   660→   660→            let sky = 0, blk = 0, ao = 3;
+   661→   661→            if (smooth && render !== 2) {
+   662→   662→              // sample the 4 cells around this corner on the outer side of the face
+   663→   663→              let ax: number, az: number; // offsets in the two tangent directions toward the corner
+   664→   664→              if (f < 2) { ax = corner[1] === 1 ? 1 : -1; az = corner[2] === 1 ? 1 : -1; }
+   665→   665→              else if (f < 4) { ax = corner[0] === 1 ? 1 : -1; az = corner[2] === 1 ? 1 : -1; }
+   666→   666→              else { ax = corner[0] === 1 ? 1 : -1; az = corner[1] === 1 ? 1 : -1; }
+   667→   667→              let ex: number, ey: number, ez: number, fx2: number, fy2: number, fz2: number, gx: number, gy: number, gz: number;
+   668→   668→              if (f < 2) { // ±x faces: tangents are y and z
+   669→   669→                ex = nx; ey = ny + ax; ez = nz;
+   670→   670→                fx2 = nx; fy2 = ny; fz2 = nz + az;
+   671→   671→                gx = nx; gy = ny + ax; gz = nz + az;
+   672→   672→              } else if (f < 4) { // ±y faces: tangents are x and z
+   673→   673→                ex = nx + ax; ey = ny; ez = nz;
+   674→   674→                fx2 = nx; fy2 = ny; fz2 = nz + az;
+   675→   675→                gx = nx + ax; gy = ny; gz = nz + az;
+   676→   676→              } else { // ±z faces: tangents are x and y
+   677→   677→                ex = nx + ax; ey = ny; ez = nz;
+   678→   678→                fx2 = nx; fy2 = ny + az; fz2 = nz;
+   679→   679→                gx = nx + ax; gy = ny + az; gz = nz;
+   680→   680→              }
+   681→   681→              const cells = [[nx, ny, nz], [ex, ey, ez], [fx2, fy2, fz2], [gx, gy, gz]];
+   682→   682→              let sumS = 0, sumB = 0, opq = 0;
+   683→   683→              const opqFlags = [0, 0, 0, 0];
+   684→   684→              for (let ci = 0; ci < 4; ci++) {
+   685→   685→                const cxx = cells[ci][0], cyy = cells[ci][1], czz = cells[ci][2];
+   686→   686→                const bid = getBlockG(cxx, cyy, czz);
+   687→   687→                const isOpq = bid === 255 || (bid !== 0 && IS_OPAQUE[bid]);
+   688→   688→                opqFlags[ci] = isOpq ? 1 : 0;
+   689→   689→                if (isOpq) { opq++; continue; }
+   690→   690→                const l = getLightG(cxx, cyy, czz);
+   691→   691→                sumS += (l >> 4); sumB += (l & 15);
+   692→   692→              }
+   693→   693→              if (opq === 4) { sumS = 0; sumB = 0; }
+   694→   694→              const s1 = opqFlags[1], s2 = opqFlags[2];
+   695→   695→              ao = (s1 && s2) ? 0 : 3 - (s1 + s2 + opqFlags[3]);
+   696→   696→              if (opq === 4) ao = 0;
+   697→   697→              sky = sumS / (4 * 15); blk = sumB / (4 * 15);
+   698→   698→            } else {
+   699→   699→              const l = getLightG(nx, ny, nz);
+   700→   700→              sky = (l >> 4) / 15; blk = (l & 15) / 15;
+   701→   701→              if (render === 2) { // water: slight self-glow so it never goes pitch black
+   702→   702→                sky = Math.max(sky, 0.25); blk = Math.max(blk, 0.05);
+   703→   703→              }
+   704→   704→            }
+   705→   705→            skyA[vi] = sky; blkA[vi] = blk; aoA[vi] = ao;
+   706→   706→            const aoM = smooth ? aoVals[Math.max(0, Math.min(3, ao))] : 1;
+   707→   707→            bucket.light.push(sky, blk);
+   708→   708→            bucket.tint.push(tr * shade * aoM, tg * shade * aoM, tb * shade * aoM);
+   709→   709→          }
+   710→   710→          // flip quad diagonal for consistent AO interpolation
+   711→   711→          if (aoA[0] + aoA[2] < aoA[1] + aoA[3]) {
+   712→   712→            bucket.idx.push(base + 1, base + 2, base + 3, base + 1, base + 3, base + 0);
+   713→   713→          } else {
+   714→   714→            bucket.idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+   715→   715→          }
+   716→   716→        }
+   717→   717→      }
+   718→   718→    }
+   719→   719→  }
+   720→   720→
+   721→   721→  const out: MeshOut = {
+   722→   722→    solid: solid.idx.length ? packBuf(solid) : null,
+   723→   723→    cutout: cutout.idx.length ? packBuf(cutout) : null,
+   724→   724→    trans: trans.idx.length ? packBuf(trans) : null,
+   725→   725→  };
+   726→   726→  return out;
+   727→   727→}
+   728→   728→
+   729→   729→function tileOfId(id: number, face: number): number {
+   730→   730→  // import lazily to avoid circular cost — tiles are encoded directly in BLOCKS; use lookup table
+   731→   731→  return TILE_TABLE[id * 6 + face];
+   732→   732→}
+   733→   733→// built at init from BLOCKS
+   734→   734→import { BLOCKS } from './blocks';
+   735→   735→const TILE_TABLE = new Uint8Array(256 * 6);
+   736→   736→for (const blk of BLOCKS) {
+   737→   737→  for (let f = 0; f < 6; f++) TILE_TABLE[blk.id * 6 + f] = blk.tiles[f];
+   738→   738→}
+   739→   739→
+   740→   740→/// ---------------- edit + relight ----------------
+   741→   741→
+   742→   742→function applyEdit(wx: number, wy: number, wz: number, newId: number): Set<number> {
+   743→   743→  const touched = new Set<number>();
+   744→   744→  const cx = wx >> 4, cz = wz >> 4;
+   745→   745→  const c = getChunk(cx, cz);
+   746→   746→  if (!c || wy < 0 || wy >= WORLD_HEIGHT) return touched;
+   747→   747→  const lx = wx & 15, lz = wz & 15;
+   748→   748→  const i = vidx(lx, wy, lz);
+   749→   749→  const oldId = c.blocks[i];
+
+[showing lines 50-749 of 933; use offset=750 with limit to continue reading]
