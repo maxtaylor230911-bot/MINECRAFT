@@ -164,7 +164,7 @@ export default function Hud({ engine }: { engine: Engine | null }) {
       if (!engine) return;
       const d = engine.getDebug();
       setDebugText([
-        `Voxelcraft 1.0 — ${d.fps} fps`,
+        `Voxelcraft 1.2 — ${d.fps} fps`,
         `XYZ: ${d.x.toFixed(3)} / ${d.y.toFixed(3)} / ${d.z.toFixed(3)}`,
         `Block: ${Math.floor(d.x)} ${Math.floor(d.y)} ${Math.floor(d.z)}`,
         `Chunk: ${d.chunkX} ${d.chunkZ}`,
@@ -233,7 +233,7 @@ export default function Hud({ engine }: { engine: Engine | null }) {
 
       {/* bottom center: status + hotbar */}
       <div
-        className="absolute left-1/2 -translate-x-1/2 flex flex-col items-center gap-1"
+        className="absolute left-1/2 flex flex-col items-center gap-1"
         style={{ bottom: 8, transform: `translateX(-50%) scale(${scale})`, transformOrigin: 'bottom center' }}
       >
         {showStatus && (
